@@ -1,24 +1,28 @@
+# type: ignore
+# flake8: noqa
+
 """Ocean Builders auth provider."""
 from __future__ import annotations
+
 import asyncio
 import base64
 from collections.abc import Mapping
 import logging
 from typing import Any, cast
+
 import bcrypt
+import boto3
 import voluptuous as vol
 
+from homeassistant.components import person
 from homeassistant.const import CONF_ID
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
-from homeassistant.components import person
 
-from .... import AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS, AuthProvider, LoginFlow
+from . import AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS, AuthProvider, LoginFlow
 from ..models import Credentials, UserMeta
-import boto3
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -85,7 +89,7 @@ class Data:
         # and will compare usernames case-insensitive.
         # Remove in 2020 or when we launch 1.0.
         self.is_legacy = False
-        self.session = None
+        self.session = None or boto3.session.Session
         self.login_response = None
 
     @callback
@@ -137,7 +141,7 @@ class Data:
     @property
     def users(self) -> list[dict[str, str]]:
         """Return users."""
-        return self._data["users"]  # type: ignore[index,no-any-return]
+        return self._data["users"]
 
     def hash_password(self, password: str, for_storage: bool = False) -> bytes:
         """Encode a password."""
@@ -198,7 +202,9 @@ class Data:
         if self._data is not None:
             await self._store.async_save(self._data)
 
-    def get_aws_credentials_from_role(self, role_info, access_key_id, secret_key):
+    def get_aws_credentials_from_role(
+        self, role_info: str, access_key_id: str, secret_key: str
+    ) -> None:
         """Using AWS role, get credentials"""
         client = boto3.client(
             "sts",
@@ -214,34 +220,41 @@ class Data:
         )
         self.session = session
 
-    def authenticate_with_cognito(self, username, password, client_id, region_name):
+    def authenticate_with_cognito(
+        self, username: str, password: str, client_id: str, region_name: str
+    ) -> None:
+        """
+        Authentication with Amazon Cognito
+        """
         username = self.normalize_username(username)
+        # pylint: disable=no-value-for-parameter
         cognito_client = self.session.client("cognito-idp", region_name=region_name)
         response = cognito_client.initiate_auth(
             ClientId=client_id,
             AuthFlow="USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": username, "PASSWORD": password},
         )
-        LOGGER.info("login response %s", response)
+        # pylint: disable=hass-logger-capital
+        LOGGER.info("login response %s", type(response))
         self.login_response = response
 
-        # self.hass.states.set("person.auth", response["AuthenticationResult"]) Can't store state in person.auth entity because state length is large
-
-    async def get_user_id(self, username):
+    async def get_user_id(self, username: str) -> str | None:
+        """
+        Fetch user's id from username
+        """
         users = await self.hass.auth.async_get_users()
         user_id = None
         for user in users:
             if len(user.credentials) != 0:
-                if (
-                    user.name == username
-                    or user.credentials[0].data["username"] == username
-                ):
+                if username in user.name or user.credentials[0].data["username"]:
                     user_id = user.id
 
         return user_id
 
-    async def asynccreate_person(self, username):
-        # self.hass.bus.async_fire("user_added_create_person", {"create_person": True})
+    async def asynccreate_person(self, username: str) -> None:
+        """
+        Create person entity
+        """
         user_id = await self.get_user_id(username)
         await person.async_create_person(self.hass, username, user_id=user_id)
 
